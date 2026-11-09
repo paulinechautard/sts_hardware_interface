@@ -21,6 +21,9 @@ namespace sts_hardware_interface
 namespace conversions
 {
 
+// `sign` (default -1) is the joint direction relative to the raw encoder: -1 inverts it
+// (REP-103, motor clockwise-positive), +1 keeps it (rising raw step = positive angle).
+
 // ===== STS protocol constants (same for all STS motors) =====
 constexpr double STEPS_PER_REVOLUTION = 4096.0;
 constexpr double STEPS_TO_RAD = (2.0 * M_PI) / STEPS_PER_REVOLUTION;
@@ -37,9 +40,9 @@ constexpr int    STS_MIDPOINT_RAW_POSITION = 2048;  // Encoder midpoint; one-key
  * STS motors increment clockwise; ROS 2 uses counter-clockwise positive (REP-103).
  * `center` is the raw encoder step that maps to 0 rad (default: STS_DEFAULT_CENTER = 4095).
  */
-inline double raw_position_to_radians(int raw_position, int center = STS_DEFAULT_CENTER)
+inline double raw_position_to_radians(int raw_position, int center = STS_DEFAULT_CENTER, int sign = -1)
 {
-  return static_cast<double>(center - raw_position) * STEPS_TO_RAD;
+  return static_cast<double>(sign * (raw_position - center)) * STEPS_TO_RAD;
 }
 
 /**
@@ -50,9 +53,9 @@ inline double raw_position_to_radians(int raw_position, int center = STS_DEFAULT
  * Clamping is intentional: the old fmod-based wrapping silently mapped negative
  * angles to the wrong end of the encoder, causing full-revolution traversals.
  */
-inline int radians_to_raw_position(double position_rad, int center = STS_DEFAULT_CENTER)
+inline int radians_to_raw_position(double position_rad, int center = STS_DEFAULT_CENTER, int sign = -1)
 {
-  double steps = std::round(static_cast<double>(center) - position_rad * RAD_TO_STEPS);
+  double steps = std::round(static_cast<double>(center) + sign * position_rad * RAD_TO_STEPS);
   return static_cast<int>(std::clamp(steps, 0.0, static_cast<double>(STS_MAX_POSITION)));
 }
 
@@ -61,9 +64,9 @@ inline int radians_to_raw_position(double position_rad, int center = STS_DEFAULT
  *
  * Motor positive direction is clockwise; ROS 2 uses counter-clockwise positive.
  */
-inline double raw_velocity_to_rad_s(int raw_velocity)
+inline double raw_velocity_to_rad_s(int raw_velocity, int sign = -1)
 {
-  return static_cast<double>(-raw_velocity) * STEPS_TO_RAD;
+  return static_cast<double>(sign * raw_velocity) * STEPS_TO_RAD;
 }
 
 /**
@@ -72,9 +75,9 @@ inline double raw_velocity_to_rad_s(int raw_velocity)
  * Applies the same sign inversion as raw_velocity_to_rad_s.
  * Use this for MODE_VELOCITY (WriteSpe / SyncWriteSpe) where sign encodes direction.
  */
-inline int rad_s_to_raw_velocity(double velocity_rad_s, int max_velocity_steps)
+inline int rad_s_to_raw_velocity(double velocity_rad_s, int max_velocity_steps, int sign = -1)
 {
-  double raw = -velocity_rad_s * RAD_TO_STEPS;
+  double raw = sign * velocity_rad_s * RAD_TO_STEPS;
   return static_cast<int>(std::clamp(
     raw,
     static_cast<double>(-max_velocity_steps),
@@ -104,9 +107,9 @@ inline int rad_s_to_raw_speed(double speed_mag_rad_s, int max_velocity_steps)
  *
  * Applies the same sign inversion as raw_velocity_to_rad_s.
  */
-inline int effort_to_raw_pwm(double effort)
+inline int effort_to_raw_pwm(double effort, int sign = -1)
 {
-  return static_cast<int>(std::clamp(-effort, -1.0, 1.0) * STS_MAX_PWM);
+  return static_cast<int>(std::clamp(sign * effort, -1.0, 1.0) * STS_MAX_PWM);
 }
 
 /**

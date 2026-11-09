@@ -327,6 +327,19 @@ hardware_interface::CallbackReturn STSHardwareInterface::on_init(
       return hardware_interface::CallbackReturn::ERROR;
     }
 
+    // invert_direction: true keeps the raw encoder direction (rising step = positive angle),
+    // for robots whose URDF axes follow the servo's own direction (e.g. LeRobot's SO-101).
+    if (joint.parameters.count("invert_direction")) {
+      const std::string & value = joint.parameters.at("invert_direction");
+      if (value == "true" || value == "True" || value == "1") {
+        joints_[i].sign = 1;
+      } else if (!(value == "false" || value == "False" || value == "0")) {
+        RCLCPP_ERROR(logger_, "Joint '%s': invalid invert_direction value: '%s' (must be true or false)",
+          joint.name.c_str(), value.c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+    }
+
     if (joint.parameters.count("position_center_steps")) {
       if (joints_[i].operating_mode != MODE_SERVO) {
         RCLCPP_WARN(logger_, "Joint '%s': position_center_steps is ignored in operating mode %d (only used in position mode %d)",
@@ -1021,7 +1034,7 @@ hardware_interface::return_type STSHardwareInterface::read(
       SMS_STS_PRESENT_POSITION_L - SMS_STS_PRESENT_POSITION_L,
       SMS_STS_PRESENT_POSITION_H - SMS_STS_PRESENT_POSITION_L,
       SMS_STS_DIRECTION_BIT_POS);
-    put_state(ST_POSITION, i, conversions::raw_position_to_radians(raw_position, joints_[i].position_center));
+    put_state(ST_POSITION, i, conversions::raw_position_to_radians(raw_position, joints_[i].position_center, joints_[i].sign));
 
     // Always clamp the reported position to URDF limits. A joint can drift past software limits
     // under gravity during estop, or be physically moved outside limits before startup. Clamping
@@ -1036,7 +1049,7 @@ hardware_interface::return_type STSHardwareInterface::read(
       SMS_STS_PRESENT_SPEED_L - SMS_STS_PRESENT_POSITION_L,
       SMS_STS_PRESENT_SPEED_H - SMS_STS_PRESENT_POSITION_L,
       SMS_STS_DIRECTION_BIT_POS);
-    put_state(ST_VELOCITY, i, conversions::raw_velocity_to_rad_s(raw_velocity));
+    put_state(ST_VELOCITY, i, conversions::raw_velocity_to_rad_s(raw_velocity, joints_[i].sign));
 
     int raw_load = ServoUtils::readSignedWordFromBuffer(
       feedback,
@@ -1157,7 +1170,7 @@ hardware_interface::return_type STSHardwareInterface::write(
       for (size_t j = 0; j < servo_motor_indices_.size(); ++j) {
         size_t idx = servo_motor_indices_[j];
         double target_position = conversions::apply_limit(cmd_val(CMD_POSITION, idx), joints_[idx].position_min, joints_[idx].position_max, joints_[idx].has_position_limits);
-        servo_sync_positions_[j] = conversions::radians_to_raw_position(target_position, joints_[idx].position_center);
+        servo_sync_positions_[j] = conversions::radians_to_raw_position(target_position, joints_[idx].position_center, joints_[idx].sign);
         servo_sync_deltas_[j] = std::abs(target_position - state_val(ST_POSITION, idx));
         max_delta_rad = std::max(max_delta_rad, servo_sync_deltas_[j]);
         servo_sync_accelerations_[j] = static_cast<u8>(conversions::clamp_acceleration(cmd_val(CMD_ACCELERATION, idx)));
@@ -1204,7 +1217,7 @@ hardware_interface::return_type STSHardwareInterface::write(
         double target_position = conversions::apply_limit(cmd_val(CMD_POSITION, idx), joints_[idx].position_min, joints_[idx].position_max, joints_[idx].has_position_limits);
         double max_speed = conversions::apply_limit(cmd_val(CMD_VELOCITY, idx), 0.0, joints_[idx].velocity_max, joints_[idx].has_velocity_limits);
 
-        int raw_position = conversions::radians_to_raw_position(target_position, joints_[idx].position_center);
+        int raw_position = conversions::radians_to_raw_position(target_position, joints_[idx].position_center, joints_[idx].sign);
         // rad_s_to_raw_speed: unsigned magnitude conversion for position mode — no sign inversion.
         // velocity command == 0.0 (not declared / not written) → raw 0 = STS protocol max speed.
         int raw_max_speed = conversions::rad_s_to_raw_speed(
@@ -1230,7 +1243,7 @@ hardware_interface::return_type STSHardwareInterface::write(
       for (size_t j = 0; j < velocity_motor_indices_.size(); ++j) {
         size_t idx = velocity_motor_indices_[j];
         double target_velocity = conversions::apply_limit(cmd_val(CMD_VELOCITY, idx), -joints_[idx].velocity_max, joints_[idx].velocity_max, joints_[idx].has_velocity_limits);
-        velocity_sync_velocities_[j] = conversions::rad_s_to_raw_velocity(target_velocity, joints_[idx].max_velocity_steps);
+        velocity_sync_velocities_[j] = conversions::rad_s_to_raw_velocity(target_velocity, joints_[idx].max_velocity_steps, joints_[idx].sign);
         velocity_sync_deltas_[j] = std::abs(target_velocity - state_val(ST_VELOCITY, idx));
         max_delta_rad_s = std::max(max_delta_rad_s, velocity_sync_deltas_[j]);
       }
@@ -1267,7 +1280,7 @@ hardware_interface::return_type STSHardwareInterface::write(
       // Individual writes for single velocity motor or when SyncWrite disabled
       for (size_t idx : velocity_motor_indices_) {
         double target_velocity = conversions::apply_limit(cmd_val(CMD_VELOCITY, idx), -joints_[idx].velocity_max, joints_[idx].velocity_max, joints_[idx].has_velocity_limits);
-        int raw_velocity = conversions::rad_s_to_raw_velocity(target_velocity, joints_[idx].max_velocity_steps);
+        int raw_velocity = conversions::rad_s_to_raw_velocity(target_velocity, joints_[idx].max_velocity_steps, joints_[idx].sign);
         int acceleration = conversions::clamp_acceleration(cmd_val(CMD_ACCELERATION, idx));
 
         if (auto r = check_write(servo_->WriteSpe(joints_[idx].motor_id, raw_velocity, acceleration), idx, "velocity"); r.has_value()) {
@@ -1284,7 +1297,8 @@ hardware_interface::return_type STSHardwareInterface::write(
       for (size_t j = 0; j < pwm_motor_indices_.size(); ++j) {
         size_t idx = pwm_motor_indices_[j];
         pwm_sync_pwm_values_[j] = conversions::effort_to_raw_pwm(
-          conversions::normalize_effort(cmd_val(CMD_EFFORT, idx), joints_[idx].effort_max, joints_[idx].has_effort_limits));
+          conversions::normalize_effort(cmd_val(CMD_EFFORT, idx), joints_[idx].effort_max, joints_[idx].has_effort_limits),
+          joints_[idx].sign);
       }
 
       servo_->SyncWritePwm(pwm_sync_ids_.data(), pwm_sync_ids_.size(), pwm_sync_pwm_values_.data());
@@ -1293,7 +1307,8 @@ hardware_interface::return_type STSHardwareInterface::write(
       // Individual writes for single PWM motor or when SyncWrite disabled
       for (size_t idx : pwm_motor_indices_) {
         int raw_pwm = conversions::effort_to_raw_pwm(
-          conversions::normalize_effort(cmd_val(CMD_EFFORT, idx), joints_[idx].effort_max, joints_[idx].has_effort_limits));
+          conversions::normalize_effort(cmd_val(CMD_EFFORT, idx), joints_[idx].effort_max, joints_[idx].has_effort_limits),
+          joints_[idx].sign);
         if (auto r = check_write(servo_->WritePwm(joints_[idx].motor_id, raw_pwm), idx, "PWM"); r.has_value()) {
           return hardware_interface::return_type::ERROR;
         }
@@ -1564,7 +1579,7 @@ void STSHardwareInterface::process_pending_one_key_calibration_mock()
     // Simulate CalibrationOfs: the motor's current physical position becomes
     // raw step 2048 (the Feetech STS encoder midpoint) without actually moving.
     put_state(ST_POSITION, idx, conversions::raw_position_to_radians(
-        conversions::STS_MIDPOINT_RAW_POSITION, joints_[idx].position_center));
+        conversions::STS_MIDPOINT_RAW_POSITION, joints_[idx].position_center, joints_[idx].sign));
     put_cmd(CMD_POSITION, idx, state_val(ST_POSITION, idx));  // Hold at the new calibrated position
 
     RCLCPP_INFO(logger_, "One-key calibration (mock): motor %d (joint '%s') position set to raw step %d",
@@ -1666,7 +1681,7 @@ bool STSHardwareInterface::seed_servo_commands_from_feedback()
       return false;
     }
 
-    double position = conversions::raw_position_to_radians(raw_position, joints_[idx].position_center);
+    double position = conversions::raw_position_to_radians(raw_position, joints_[idx].position_center, joints_[idx].sign);
     if (joints_[idx].has_position_limits) {
       position = std::clamp(position, joints_[idx].position_min, joints_[idx].position_max);
     }

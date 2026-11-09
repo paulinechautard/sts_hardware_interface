@@ -284,6 +284,7 @@ private:
     double effort_max = 1.0;
     bool has_effort_limits = false;
     int position_center = conversions::STS_DEFAULT_CENTER;  // Raw step for 0 rad
+    int sign = -1;  // Joint direction vs raw steps: -1 inverted (default), +1 with invert_direction
     int max_velocity_steps = DEFAULT_MAX_VELOCITY_STEPS;    // Motor max velocity, steps/s (model-dependent)
     std::array<std::optional<int>, EEPROM_REG_COUNT> eeprom;  // Unset = leave the servo's value alone
   };

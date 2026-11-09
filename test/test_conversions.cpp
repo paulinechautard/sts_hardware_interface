@@ -305,6 +305,38 @@ TEST(ConversionsTest, DecodeServoError_UnknownBit_Surfaced) {
   EXPECT_EQ(decode_servo_error((1 << 0) | (1 << 1)), "voltage error, unknown bits 0x02");
 }
 
+// ---- direction sign (invert_direction) ----
+
+/** @brief sign=+1 keeps the raw direction: rising step = positive angle, around the center */
+TEST(ConversionsTest, PositionSignPositive_KnownValues) {
+  EXPECT_NEAR(raw_position_to_radians(2048, 2048, 1), 0.0, 1e-9);
+  EXPECT_NEAR(raw_position_to_radians(3072, 2048, 1), M_PI / 2.0, 1e-9);
+  EXPECT_NEAR(raw_position_to_radians(1024, 2048, 1), -M_PI / 2.0, 1e-9);
+  EXPECT_EQ(radians_to_raw_position(M_PI / 2.0, 2048, 1), 3072);
+  EXPECT_EQ(radians_to_raw_position(-M_PI / 2.0, 2048, 1), 1024);
+}
+
+/** @brief The two signs mirror each other around the center */
+TEST(ConversionsTest, PositionSign_Mirrors) {
+  for (int raw = 0; raw <= 4095; raw += 7) {
+    EXPECT_NEAR(raw_position_to_radians(raw, 2044, 1), -raw_position_to_radians(raw, 2044, -1), 1e-9);
+  }
+}
+
+/** @brief Round trip with sign=+1 */
+TEST(ConversionsTest, PositionSignPositive_Roundtrip) {
+  for (int raw = 0; raw <= 4095; raw += 13) {
+    EXPECT_EQ(radians_to_raw_position(raw_position_to_radians(raw, 2066, 1), 2066, 1), raw);
+  }
+}
+
+/** @brief Velocity and PWM follow the same sign */
+TEST(ConversionsTest, VelocityAndPwmSignPositive) {
+  EXPECT_NEAR(raw_velocity_to_rad_s(100, 1), 100.0 * STEPS_TO_RAD, 1e-9);
+  EXPECT_EQ(rad_s_to_raw_velocity(100.0 * STEPS_TO_RAD, TEST_MAX_VEL_STEPS, 1), 100);
+  EXPECT_EQ(effort_to_raw_pwm(0.5, 1), 500);
+}
+
 int main(int argc, char ** argv)
 {
   testing::InitGoogleTest(&argc, argv);
